@@ -1,0 +1,4 @@
+# Dependencies for the API Gateway Cloud Function
+
+functions-framework==3.*
+google-cloud-firestore==2.*

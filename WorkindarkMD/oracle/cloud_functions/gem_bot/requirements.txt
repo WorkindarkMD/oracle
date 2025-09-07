@@ -1,0 +1,5 @@
+# Dependencies for the Gem.Bot Cloud Function
+
+functions-framework==3.*
+google-cloud-firestore==2.*
+google-cloud-event==0.2.0

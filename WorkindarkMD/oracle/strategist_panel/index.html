@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Панель Стратега</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #121212; color: #e0e0e0; margin: 0; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+        .container { background-color: #1e1e1e; border-radius: 8px; padding: 20px; width: 100%; max-width: 800px; box-shadow: 0 4px 8px rgba(0,0,0,0.3); }
+        h1 { text-align: center; color: #bb86fc; }
+        #signal-display { background-color: #2c2c2c; border: 1px solid #333; border-radius: 4px; padding: 15px; margin-top: 20px; min-height: 150px; white-space: pre-wrap; word-wrap: break-word; font-family: "Courier New", Courier, monospace; font-size: 14px; }
+        .status-dot { height: 12px; width: 12px; background-color: #bbb; border-radius: 50%; display: inline-block; margin-right: 8px; transition: background-color 0.5s ease; }
+        .status-dot.alive { background-color: #00ff00; }
+        .status-dot.stale { background-color: #ff4500; }
+        .footer { text-align: center; margin-top: 20px; font-size: 12px; color: #777; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Панель Стратега: Live Feed</h1>
+        <p><span id="status-dot" class="status-dot"></span>Последний сигнал:</p>
+        <div id="signal-display">Ожидание данных...</div>
+        <p class="footer">Страница автоматически обновляется при поступлении новых сигналов.</p>
+    </div>
+
+    <!-- Firebase SDK -->
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
+
+    <script>
+        // =================================================================================
+        // !!! ВАЖНО: ЗАМЕНИТЕ ЭТОТ ОБЪЕКТ НА ВАШ РЕАЛЬНЫЙ КОНФИГУРАЦИОННЫЙ ОБЪЕКТ !!!
+        //
+        // Инструкция по получению:
+        // 1. Откройте консоль Firebase: console.firebase.google.com
+        // 2. Выберите ваш проект (projectoracle).
+        // 3. Нажмите на иконку шестеренки (рядом с "Project Overview") -> "Project settings".
+        // 4. В разделе "Your apps", если у вас еще нет веб-приложения, создайте его (нажмите "Add app" -> Web (</>)).
+        // 5. Выберите ваше веб-приложение.
+        // 6. В разделе "Firebase SDK snippet" выберите "Config".
+        // 7. Скопируйте весь объект `firebaseConfig` и вставьте его сюда.
+        // =================================================================================
+        const firebaseConfig = {
+            apiKey: "ВАШ_API_KEY",
+            authDomain: "ВАШ_PROJECT_ID.firebaseapp.com",
+            projectId: "ВАШ_PROJECT_ID",
+            storageBucket: "ВАШ_PROJECT_ID.appspot.com",
+            messagingSenderId: "ВАШ_SENDER_ID",
+            appId: "ВАШ_APP_ID"
+        };
+
+        // Инициализация Firebase
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.firestore();
+
+        const signalDisplay = document.getElementById('signal-display');
+        const statusDot = document.getElementById('status-dot');
+        let lastTimestamp = null;
+        let staleTimer = null;
+
+        // Функция для обновления статуса "свежести" данных
+        function updateStatus() {
+            if (lastTimestamp) {
+                const now = new Date();
+                const last = new Date(lastTimestamp);
+                const diffSeconds = (now - last) / 1000;
+                if (diffSeconds > 25) { // Больше двух интервалов + запас
+                    statusDot.className = 'status-dot stale';
+                } else {
+                    statusDot.className = 'status-dot alive';
+                }
+            }
+        }
+
+        // Слушаем коллекцию 'cbot_signals' в реальном времени
+        db.collection("cbot_signals")
+          .orderBy("timestamp", "desc")
+          .limit(1)
+          .onSnapshot((querySnapshot) => {
+              if (querySnapshot.empty) {
+                  signalDisplay.textContent = "В базе данных пока нет ни одного сигнала.";
+                  return;
+              }
+              querySnapshot.forEach((doc) => {
+                  const data = doc.data();
+                  signalDisplay.textContent = JSON.stringify(data, null, 2);
+                  lastTimestamp = data.timestamp;
+                  updateStatus();
+
+                  // Сбрасываем таймер "устаревания"
+                  if (staleTimer) clearTimeout(staleTimer);
+                  staleTimer = setTimeout(updateStatus, 15000); // Проверяем через 15 сек
+              });
+          }, (error) => {
+              console.error("Ошибка при получении данных из Firestore: ", error);
+              signalDisplay.textContent = `Ошибка подключения к Firestore. Убедитесь, что вы правильно вставили firebaseConfig и что ваш проект настроен.\n\nДетали: ${error.message}`;
+          });
+
+        // Проверяем статус каждые 5 секунд
+        setInterval(updateStatus, 5000);
+    </script>
+</body>
+</html>
