@@ -4,7 +4,6 @@ using cAlgo.API;
 using cAlgo.API.Indicators;
 using System.Collections.Generic;
 using System.Text;
-using System.IO;
 
 namespace cAlgo.Robots
 {
@@ -167,81 +166,10 @@ namespace cAlgo.Robots
         public string StatusMessage { get; set; }
     }
 
-        // Grant full access for file operations (per user request)
-        [Robot(TimeZone = TimeZones.UTC, AccessRights = AccessRights.FullAccess)]
+        // No file access needed
+        [Robot(TimeZone = TimeZones.UTC, AccessRights = AccessRights.None)]
     public class OlympianQuantumTrader : Robot
     {
-        // ========== File Logging ==========
-        public enum LogLevel { Error = 0, Info = 1, Debug = 2 }
-
-        [Parameter("�������� ��� � ����", DefaultValue = true, Group = "19. Logging")]
-        public bool EnableFileLogging { get; set; }
-
-        [Parameter("����� ����� (�����=���������)", DefaultValue = "", Group = "19. Logging")]
-        public string LogFolderPath { get; set; }
-
-        [Parameter("������� ����������� (0-2)", DefaultValue = 1, MinValue = 0, MaxValue = 2, Group = "19. Logging")]
-        public int LogVerbosity { get; set; }
-
-        private string _logFilePath = string.Empty;
-        private object _logLock = new object();
-        private StreamWriter _logWriter = null;
-
-        private void LogToFile(LogLevel level, string message)
-        {
-            try
-            {
-                if (!EnableFileLogging) return;
-                if ((int)level > LogVerbosity) return;
-                if (_logWriter == null) return;
-                string ts = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff");
-                lock (_logLock)
-                {
-                    _logWriter.WriteLine($"{ts} [{level}] {message}");
-                    _logWriter.Flush();
-                }
-            }
-            catch { }
-        }
-
-        private void InitLogger()
-        {
-            try
-            {
-                if (!EnableFileLogging)
-                    return;
-                string folder = LogFolderPath;
-                if (string.IsNullOrWhiteSpace(folder))
-                {
-                    string docs = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
-                    folder = Path.Combine(docs, "cAlgo", "Logs");
-                }
-                Directory.CreateDirectory(folder);
-                string fileName = $"{GetType().Name}_{SymbolName}_{Server.Time:yyyyMMdd_HHmmss}.log";
-                _logFilePath = Path.Combine(folder, fileName);
-                _logWriter = new StreamWriter(new FileStream(_logFilePath, FileMode.Create, FileAccess.Write, FileShare.Read)) { AutoFlush = true };
-                LogToFile(LogLevel.Info, $"Logger initialized: {_logFilePath}");
-            }
-            catch (Exception ex)
-            {
-                Print($"[Logging] Init failed: {ex.Message}");
-            }
-        }
-
-        private void CloseLogger()
-        {
-            try
-            {
-                if (_logWriter != null)
-                {
-                    LogToFile(LogLevel.Info, "Logger closing");
-                    _logWriter.Flush();
-                    _logWriter.Dispose();
-                    _logWriter = null;
-                }
-            }
-            catch { }
-        }
 
         // Converts absolute TP/SL prices to pip distances for order APIs
         private (double? slPips, double? tpPips) ToPipDistances(TradeType tradeType, double entryPrice, double? slPrice, double? tpPrice)
@@ -1002,9 +930,8 @@ namespace cAlgo.Robots
                     if (b.High > maxH) maxH = b.High;
                     if (b.Low < minL) minL = b.Low;
                 }
-                double width = maxH - minL; // � �������� ���� (��� XAUUSD ? USD)
+                double width = maxH - minL; // в валюте котировки (для XAUUSD ~ USD)
                 bool compressed = width <= Math.Max(0.01, RangeCompressionWidthUSD);
-                if (compressed) LogToFile(LogLevel.Debug, $"Range compressed: width={width:F2} ? {RangeCompressionWidthUSD:F2} in {need}m");
                 return compressed;
             }
             catch { return false; }
@@ -1033,75 +960,66 @@ namespace cAlgo.Robots
                 double tpNew = t.tp.Value;
                 if (tradeType == TradeType.Buy) tpNew = Math.Min(tpNew, lim); else tpNew = Math.Max(tpNew, lim);
                 if (Math.Abs(tpNew - t.tp.Value) > Symbol.PipSize)
-                    LogToFile(LogLevel.Info, $"Adaptive TP applied: old={t.tp.Value:F2} new={tpNew:F2} (entry={entryPrice:F2})");
+                    Print($"Adaptive TP applied: old={t.tp.Value:F2} new={tpNew:F2} (entry={entryPrice:F2})");
                 return (NormalizePrice(tpNew), t.sl);
             }
             catch { return t; }
         }
 
-        // ========== Logged trading helpers wrapping base API ==========
+        // Passthrough trading helpers to allow base API calls
         public TradeResult ExecuteMarketOrder(TradeType tradeType, string symbolName, double volumeInUnits, string label = null, double? stopLossPips = null, double? takeProfitPips = null)
         {
-            try
-            {
-                LogToFile(LogLevel.Info, $"ExecuteMarketOrder {tradeType} {symbolName} vol={volumeInUnits:F2} label={label} slPips={stopLossPips?.ToString("F1") ?? "-"} tpPips={takeProfitPips?.ToString("F1") ?? "-"}");
-            }
-            catch { }
             var res = base.ExecuteMarketOrder(tradeType, symbolName, volumeInUnits, label, stopLossPips, takeProfitPips);
-            try
-            {
-                LogToFile(res.IsSuccessful ? LogLevel.Info : LogLevel.Error,
-                    $"Result MarketOrder: success={res.IsSuccessful} err={res.Error?.ToString() ?? "-"} posId={res.Position?.Id.ToString() ?? "-"} entry={res.Position?.EntryPrice.ToString("F5") ?? "-"}");
-            }
-            catch { }
+            if (!res.IsSuccessful)
+                Print($"[ERROR] MarketOrder failed: {res.Error}");
             return res;
         }
 
         public TradeResult PlaceLimitOrder(TradeType tradeType, string symbolName, double volumeInUnits, double targetPrice, string label = null, double? stopLossPips = null, double? takeProfitPips = null, DateTime? expiration = null)
         {
-            try { LogToFile(LogLevel.Info, $"PlaceLimit {tradeType} {symbolName} vol={volumeInUnits:F2} @ {targetPrice:F5} label={label} slPips={stopLossPips?.ToString("F1") ?? "-"} tpPips={takeProfitPips?.ToString("F1") ?? "-"} exp={(expiration.HasValue ? expiration.Value.ToString("yyyy-MM-dd HH:mm") : "-")}"); } catch { }
             var res = base.PlaceLimitOrder(tradeType, symbolName, volumeInUnits, targetPrice, label, stopLossPips, takeProfitPips, expiration);
-            try { LogToFile(res.IsSuccessful ? LogLevel.Debug : LogLevel.Error, $"Result PlaceLimit: success={res.IsSuccessful} err={res.Error?.ToString() ?? "-"} orderId={res.PendingOrder?.Id.ToString() ?? "-"}"); } catch { }
+            if (!res.IsSuccessful)
+                Print($"[ERROR] PlaceLimit failed: {res.Error}");
             return res;
         }
 
         public TradeResult PlaceStopOrder(TradeType tradeType, string symbolName, double volumeInUnits, double targetPrice, string label = null, double? stopLossPips = null, double? takeProfitPips = null, DateTime? expiration = null)
         {
-            try { LogToFile(LogLevel.Info, $"PlaceStop {tradeType} {symbolName} vol={volumeInUnits:F2} @ {targetPrice:F5} label={label} slPips={stopLossPips?.ToString("F1") ?? "-"} tpPips={takeProfitPips?.ToString("F1") ?? "-"} exp={(expiration.HasValue ? expiration.Value.ToString("yyyy-MM-dd HH:mm") : "-")}"); } catch { }
             var res = base.PlaceStopOrder(tradeType, symbolName, volumeInUnits, targetPrice, label, stopLossPips, takeProfitPips, expiration);
-            try { LogToFile(res.IsSuccessful ? LogLevel.Debug : LogLevel.Error, $"Result PlaceStop: success={res.IsSuccessful} err={res.Error?.ToString() ?? "-"} orderId={res.PendingOrder?.Id.ToString() ?? "-"}"); } catch { }
+            if (!res.IsSuccessful)
+                Print($"[ERROR] PlaceStop failed: {res.Error}");
             return res;
         }
 
         public TradeResult ModifyPosition(Position position, double? stopLoss, double? takeProfit, ProtectionType protectionType)
         {
-            try { LogToFile(LogLevel.Debug, $"ModifyPosition id={position?.Id} sl={(stopLoss.HasValue ? stopLoss.Value.ToString("F5") : "-")} tp={(takeProfit.HasValue ? takeProfit.Value.ToString("F5") : "-")} type={protectionType}"); } catch { }
             var res = base.ModifyPosition(position, stopLoss, takeProfit, protectionType);
-            try { LogToFile(res.IsSuccessful ? LogLevel.Debug : LogLevel.Error, $"Result Modify: success={res.IsSuccessful} err={res.Error?.ToString() ?? "-"}"); } catch { }
+            if (!res.IsSuccessful)
+                Print($"[ERROR] ModifyPosition failed: {res.Error}");
             return res;
         }
 
         public TradeResult CancelPendingOrder(PendingOrder order)
         {
-            try { LogToFile(LogLevel.Debug, $"CancelPending id={order?.Id} label={order?.Label} @ {order?.TargetPrice:F5}"); } catch { }
             var res = base.CancelPendingOrder(order);
-            try { LogToFile(res.IsSuccessful ? LogLevel.Debug : LogLevel.Error, $"Result CancelPending: success={res.IsSuccessful} err={res.Error?.ToString() ?? "-"}"); } catch { }
+            if (!res.IsSuccessful)
+                Print($"[ERROR] CancelPendingOrder failed: {res.Error}");
             return res;
         }
 
         public TradeResult ClosePosition(Position position)
         {
-            try { LogToFile(LogLevel.Info, $"ClosePosition id={position?.Id} label={position?.Label} pnl={position?.NetProfit:C}"); } catch { }
             var res = base.ClosePosition(position);
-            try { LogToFile(res.IsSuccessful ? LogLevel.Info : LogLevel.Error, $"Result ClosePosition: success={res.IsSuccessful} err={res.Error?.ToString() ?? "-"}"); } catch { }
+            if (!res.IsSuccessful)
+                Print($"[ERROR] ClosePosition failed: {res.Error}");
             return res;
         }
 
         public TradeResult ClosePosition(Position position, double volumeInUnits)
         {
-            try { LogToFile(LogLevel.Info, $"ClosePositionPartial id={position?.Id} vol={volumeInUnits:F2} label={position?.Label} pnl={position?.NetProfit:C}"); } catch { }
             var res = base.ClosePosition(position, volumeInUnits);
-            try { LogToFile(res.IsSuccessful ? LogLevel.Info : LogLevel.Error, $"Result ClosePartial: success={res.IsSuccessful} err={res.Error?.ToString() ?? "-"}"); } catch { }
+            if (!res.IsSuccessful)
+                Print($"[ERROR] ClosePositionPartial failed: {res.Error}");
             return res;
         }
 
@@ -1230,7 +1148,6 @@ namespace cAlgo.Robots
             {
                 if (!UseTrapGrid)
                     return;
-                LogToFile(LogLevel.Debug, "TrapGrid check");
 
                 if ((DateTime.Now - _lastTrapRebuild).TotalSeconds < TrapRebuildSeconds)
                 {
@@ -1252,7 +1169,7 @@ namespace cAlgo.Robots
                 CancelTrapOrders();
                 BuildTrapGrid();
                 _lastTrapRebuild = DateTime.Now;
-                LogToFile(LogLevel.Info, "TrapGrid rebuilt");
+                Print("TrapGrid rebuilt");
 
                 if (TrapUseOCO) EnforceTrapOCO();
             }
@@ -1266,7 +1183,6 @@ namespace cAlgo.Robots
         {
             foreach (var po in PendingOrders.Where(o => o.SymbolName == SymbolName && o.Label.StartsWith(TRAP_LABEL_PREFIX)))
             {
-                LogToFile(LogLevel.Debug, $"CancelTrapOrders: cancel {po.Label} @ {po.TargetPrice:F5}");
                 CancelPendingOrder(po);
             }
         }
@@ -1421,17 +1337,9 @@ namespace cAlgo.Robots
 
         protected override void OnStart()
         {
-            InitLogger();
-            LogToFile(LogLevel.Info, "OnStart invoked");
-
             InitializeComponents();
-            LogToFile(LogLevel.Debug, "Components initialized");
-
             InitializeTimeFrames();
-            LogToFile(LogLevel.Debug, $"TimeFrames: sel={_selectedTimeFrame}, HTF={_higherTimeFrame}, LTF={_lowerTimeFrame}");
-
             InitializeAnalysisStructures();
-            LogToFile(LogLevel.Debug, "Analysis structures initialized");
 
             if (EnableParallelTeam)
                 InitializeTeam();
@@ -1439,7 +1347,7 @@ namespace cAlgo.Robots
             // Определяем тип рынка и настройки
             _detectedMarket = AutoDetectMarket ? DetectMarketType() : ManualMarketType;
             _currentSettings = GetMarketSettings(_detectedMarket);
-            LogToFile(LogLevel.Info, $"Market detected: {_detectedMarket}; Settings: orders={_currentSettings.OrdersCount}, step={_currentSettings.StepPips}, tp={_currentSettings.TakeProfitPips}");
+            Print($"Market detected: {_detectedMarket}; Settings: orders={_currentSettings.OrdersCount}, step={_currentSettings.StepPips}, tp={_currentSettings.TakeProfitPips}");
 
             if (ApplyPresetOnStart)
             {
@@ -1448,10 +1356,9 @@ namespace cAlgo.Robots
             }
 
             PrintStartupInfo();
-            LogToFile(LogLevel.Info, $"Startup: symbol={SymbolName} market={_currentSettings.MarketName} timeframe={_selectedTimeFrame}");
+            Print($"Startup: symbol={SymbolName} market={_currentSettings.MarketName} timeframe={_selectedTimeFrame}");
 
             Timer.Start(TimeSpan.FromSeconds(1));
-            LogToFile(LogLevel.Debug, "Timer started (1s)");
 
             // Subscribe to position closed event (API without override)
             try { Positions.Closed += OnPositionsClosed; } catch { }
@@ -1584,7 +1491,6 @@ namespace cAlgo.Robots
         {
             try
             {
-                LogToFile(LogLevel.Debug, "OnTimer tick");
                 if (EnableParallelTeam)
                 {
                     ParallelTeamLoop();
@@ -1600,6 +1506,12 @@ namespace cAlgo.Robots
             {
                 Print($"Критическая ошибка в главном цикле: {ex.Message}");
             }
+        }
+
+        protected override void OnTick()
+        {
+            // High-frequency check for emergency stop conditions
+            CheckEmergencyStop();
         }
 
         private void ParallelTeamLoop()
@@ -2792,7 +2704,7 @@ namespace cAlgo.Robots
             if (emergencyTriggered)
             {
                 Print($"🚨 ЭКСТРЕННЫЙ СТОП: {triggerReason}");
-                LogToFile(LogLevel.Error, $"EMERGENCY STOP: {triggerReason}. Balance={Account.Balance:C}, Equity={Account.Equity:C}");
+                Print($"EMERGENCY STOP: {triggerReason}. Balance={Account.Balance:C}, Equity={Account.Equity:C}");
 
                 CloseAllPositionsAndStop(triggerReason);
             }
@@ -2820,7 +2732,7 @@ namespace cAlgo.Robots
                         _tradingPaused = true;
                         CancelAllPendingOrdersForSymbol();
                         _currentStrategy = $"PAUSE: {_pauseReason}";
-                        LogToFile(LogLevel.Info, $"Trading paused (margin): {_pauseReason}");
+                        Print($"Trading paused (margin): {_pauseReason}");
                     }
                     return true;
                 }
@@ -2828,7 +2740,7 @@ namespace cAlgo.Robots
                 {
                     _tradingPaused = false;
                     _pauseReason = string.Empty;
-                    LogToFile(LogLevel.Info, "Trading resumed (margin)");
+                    Print("Trading resumed (margin)");
                     _currentStrategy = "Возобновление после паузы (маржа)";
                 }
             }
@@ -3590,15 +3502,15 @@ namespace cAlgo.Robots
         {
             try
             {
-                LogToFile(LogLevel.Info, "=== НАЧАЛО МИТИГАЦИИ ПРОСАДКИ ===");
+                Print("=== НАЧАЛО МИТИГАЦИИ ПРОСАДКИ ===");
                 Print($"🚨 ЗАПУСК МИТИГАЦИИ: Balance={Account.Balance:C}, Equity={Account.Equity:C}");
                 var losing = Positions.Where(p => p.SymbolName == SymbolName && p.NetProfit < 0).ToList();
                 if (!losing.Any())
                 {
-                    LogToFile(LogLevel.Info, "Нет убыточных позиций для митигации");
+                    Print("Нет убыточных позиций для митигации");
                     return;
                 }
-                LogToFile(LogLevel.Info, $"Найдено убыточных позиций: {losing.Count}, общий убыток: {losing.Sum(p => p.NetProfit):C}");
+                Print($"Найдено убыточных позиций: {losing.Count}, общий убыток: {losing.Sum(p => p.NetProfit):C}");
                 Print($"📊 Митигация: {losing.Count} убыточных позиций, убыток: {losing.Sum(p => p.NetProfit):C}");
 
                 int fully = 0, partially = 0, kept = 0, hard = 0;
@@ -3977,7 +3889,6 @@ namespace cAlgo.Robots
                 {
                     bool hitProfit = NetProfitAbsTarget > 0 && netProfit >= NetProfitAbsTarget;
                     bool hitLoss = NetLossAbsTarget > 0 && netProfit < 0 && Math.Abs(netProfit) >= NetLossAbsTarget;
-                    LogToFile(LogLevel.Debug, $"Проверка абс. порогов: netProfit={netProfit:F2}, hitProfit={hitProfit}, hitLoss={hitLoss}");
                     if (hitProfit || hitLoss)
                     {
                         string side = hitProfit ? $">= {NetProfitAbsTarget:C}" : $"убыток >= {NetLossAbsTarget:C}";
@@ -4126,7 +4037,7 @@ namespace cAlgo.Robots
             int closed = 0;
             foreach (var pos in toClose)
             {
-                LogToFile(LogLevel.Info, $"AutoClose aggregate: closing posId={pos.Id} label={pos.Label} pnl={pos.NetProfit:C}");
+                Print($"AutoClose aggregate: closing posId={pos.Id} label={pos.Label} pnl={pos.NetProfit:C}");
                 ClosePosition(pos);
                 closed++;
             }
@@ -4138,7 +4049,7 @@ namespace cAlgo.Robots
             }
 
             Print($"✅ Автозакрытие по сумме: Net={netProfit:C} {reasonSide}. Закрыто позиций: {closed}. {(AutoCloseCancelPendingOrders ? ($"Отменено pending: {canceled}.") : "")}");
-            LogToFile(LogLevel.Info, $"AutoClose aggregate done: net={netProfit:F2} {reasonSide}, closed={closed}, canceledPend={canceled}");
+            Print($"AutoClose aggregate done: net={netProfit:F2} {reasonSide}, closed={closed}, canceledPend={canceled}");
         }
 
         private DateTime GetLocalSessionNow()
@@ -4191,7 +4102,7 @@ namespace cAlgo.Robots
         protected override void OnStop()
         {
             try { Positions.Closed -= OnPositionsClosed; } catch { }
-            LogToFile(LogLevel.Info, "OnStop invoked");
+            Print("OnStop invoked");
 
             Print("====== QUANTUM TRADER ОСТАНОВЛЕН ======");
             Print($"[STOP] 🎯 Символ: {SymbolName}");
@@ -4231,7 +4142,6 @@ namespace cAlgo.Robots
             }
 
             Print("==============================");
-            CloseLogger();
         }
     }
 }
